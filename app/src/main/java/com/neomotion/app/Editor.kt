@@ -121,7 +121,7 @@ private fun DrawScope.drawClipBlock(
             style = TextStyle(color = Color.White, fontSize = 11.sp),
             overflow = TextOverflow.Clip,
             maxLines = 1,
-            size = Size(cw - 16.dp.toPx(), 16.dp.toPx())
+            size = Size(minOf(cw - 16.dp.toPx(), size.width), 16.dp.toPx())
         )
     }
 }
