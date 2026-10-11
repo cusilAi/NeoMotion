@@ -103,4 +103,24 @@ object TimelineOps {
         val (i, _) = locate(clips, posMs) ?: return null
         return clips.toMutableList().apply { removeAt(i) }
     }
+
+    /** Moves the clip at index [from] so it ends up at index [to]. */
+    fun move(clips: List<Clip>, from: Int, to: Int): List<Clip> {
+        val m = clips.toMutableList()
+        val item = m.removeAt(from)
+        m.add(to, item)
+        return m
+    }
+
+    /** Where a dragged clip should land, given where its center is (in timeline ms). */
+    fun targetIndex(clips: List<Clip>, from: Int, centerMs: Float): Int {
+        var count = 0
+        var acc = 0L
+        for ((i, c) in clips.withIndex()) {
+            val center = acc + c.durationMs / 2f
+            if (i != from && centerMs > center) count++
+            acc += c.durationMs
+        }
+        return count
+    }
 }

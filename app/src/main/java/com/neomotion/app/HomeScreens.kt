@@ -30,7 +30,7 @@ private data class Feature(val title: String, val desc: String, val status: Int)
 
 // status: 0 = ready, 1 = next up, 2 = coming soon
 private val features = listOf(
-    Feature("Timeline editing", "Multi-clip timeline, split, trim, delete, undo / redo", 0),
+    Feature("Timeline editing", "Multi-clip timeline, drag to reorder, split, trim, undo / redo", 0),
     Feature("Layers & text", "Move, scale and rotate layers with your fingers", 1),
     Feature("Keyframes & graph editor", "Animate anything with bezier speed curves", 2),
     Feature("GPU effects", "Smooth shader effects that stay lag-free", 2),
@@ -96,7 +96,7 @@ fun HomeScreen(onStart: () -> Unit) {
         }
 
         Spacer(Modifier.height(16.dp))
-        Text("NeoMotion v0.3.0", color = NeoColors.Muted, fontSize = 12.sp)
+        Text("NeoMotion v0.4.0", color = NeoColors.Muted, fontSize = 12.sp)
     }
 }
 
