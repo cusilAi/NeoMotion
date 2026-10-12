@@ -96,7 +96,7 @@ fun HomeScreen(onStart: () -> Unit) {
         }
 
         Spacer(Modifier.height(16.dp))
-        Text("NeoMotion v0.4.0", color = NeoColors.Muted, fontSize = 12.sp)
+        Text("NeoMotion v0.5.0", color = NeoColors.Muted, fontSize = 12.sp)
     }
 }
 

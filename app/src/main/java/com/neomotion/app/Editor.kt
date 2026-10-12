@@ -8,9 +8,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,8 +34,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,12 +47,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -62,6 +68,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -97,13 +105,49 @@ private fun DrawScope.drawClipBlock(
     hgt: Float,
     color: Color,
     selected: Boolean,
-    lifted: Boolean
+    lifted: Boolean,
+    strip: ThumbStrip?,
+    inMs: Long,
+    ppm: Float
 ) {
     val tl = Offset(x0 + 1f, top)
     val sz = Size(maxOf(cw - 2f, 1f), hgt)
     val r = CornerRadius(8.dp.toPx())
-    val alpha = if (lifted) 0.92f else if (selected) 1f else 0.7f
-    drawRoundRect(color = color.copy(alpha = alpha), topLeft = tl, size = sz, cornerRadius = r)
+    val baseAlpha = if (lifted) 0.92f else if (selected) 1f else 0.7f
+    drawRoundRect(color = color.copy(alpha = baseAlpha), topLeft = tl, size = sz, cornerRadius = r)
+
+    if (strip != null) {
+        val path = Path().apply { addRoundRect(RoundRect(Rect(tl, sz), r)) }
+        clipPath(path) {
+            val tileW = hgt
+            var k = maxOf(0, ((0f - x0) / tileW).toInt())
+            while (k * tileW < cw && x0 + k * tileW < size.width) {
+                val dx = x0 + k * tileW
+                val srcMs = inMs + ((k * tileW + tileW / 2f) / ppm).toLong()
+                val idx = ((srcMs.toFloat() / strip.intervalMs) + 0.5f).toInt()
+                    .coerceIn(0, strip.frames.size - 1)
+                val img = strip.frames[idx]
+                if (img != null) {
+                    val side = minOf(img.width, img.height)
+                    drawImage(
+                        image = img,
+                        srcOffset = IntOffset((img.width - side) / 2, (img.height - side) / 2),
+                        srcSize = IntSize(side, side),
+                        dstOffset = IntOffset(dx.toInt(), top.toInt()),
+                        dstSize = IntSize(tileW.toInt() + 1, hgt.toInt())
+                    )
+                }
+                k++
+            }
+            if (!selected && !lifted) {
+                drawRect(Color(0x66000000), tl, sz)
+            }
+            // dark strip behind the label, colored strip at the bottom
+            drawRect(Color(0x88000000), tl, Size(sz.width, 20.dp.toPx()))
+            drawRect(color, Offset(tl.x, top + hgt - 4.dp.toPx()), Size(sz.width, 4.dp.toPx()))
+        }
+    }
+
     if (selected || lifted) {
         drawRoundRect(
             color = if (lifted) NeoColors.Accent else Color.White,
@@ -117,7 +161,7 @@ private fun DrawScope.drawClipBlock(
         drawText(
             tm,
             label,
-            Offset(x0 + 8.dp.toPx(), top + 6.dp.toPx()),
+            Offset(x0 + 8.dp.toPx(), top + 3.dp.toPx()),
             style = TextStyle(color = Color.White, fontSize = 11.sp),
             overflow = TextOverflow.Clip,
             maxLines = 1,
@@ -201,8 +245,10 @@ fun EditorScreen(onExit: () -> Unit) {
     var zoomDp by remember { mutableFloatStateOf(60f) } // dp per second
     var draggingId by remember { mutableStateOf<Long?>(null) }
     var dragDx by remember { mutableFloatStateOf(0f) }
+    var scrubTick by remember { mutableIntStateOf(0) }
     val undoStack = remember { mutableStateListOf<List<Clip>>() }
     val redoStack = remember { mutableStateListOf<List<Clip>>() }
+    val thumbs = remember { mutableStateMapOf<String, ThumbStrip>() }
 
     val exo = remember { ExoPlayer.Builder(context).build() }
 
@@ -233,6 +279,37 @@ fun EditorScreen(onExit: () -> Unit) {
                 playheadMs = TimelineOps.clipStart(clips, idx) + exo.currentPosition.coerceAtLeast(0L)
             }
             delay(16)
+        }
+    }
+
+    // After scrubbing stops, do one exact seek (scrubbing itself uses fast keyframe seeks)
+    LaunchedEffect(scrubTick) {
+        if (scrubTick > 0) {
+            delay(180)
+            exo.setSeekParameters(SeekParameters.EXACT)
+            val t = TimelineOps.totalDuration(clips)
+            val p = playheadMs.coerceIn(0L, t)
+            val loc = TimelineOps.locate(clips, p)
+            if (loc != null) {
+                val off = minOf(loc.second, maxOf(0L, clips[loc.first].durationMs - 1))
+                exo.seekTo(loc.first, off)
+            }
+        }
+    }
+
+    // Make preview frames for every video source on the timeline
+    val sourceKey = clips.joinToString("|") { it.uri.toString() }
+    LaunchedEffect(sourceKey) {
+        for (c in clips) {
+            val key = c.uri.toString()
+            val existing = thumbs[key]
+            if (existing != null && existing.done) continue
+            val strip = existing ?: run {
+                val interval = maxOf(1000L, c.sourceDurationMs / 100L)
+                val count = (c.sourceDurationMs / interval).toInt() + 1
+                ThumbStrip(interval, count).also { thumbs[key] = it }
+            }
+            fillThumbs(context, c.uri, strip)
         }
     }
 
@@ -306,6 +383,7 @@ fun EditorScreen(onExit: () -> Unit) {
         if (exo.isPlaying) {
             exo.pause()
         } else {
+            exo.setSeekParameters(SeekParameters.EXACT)
             if (playheadMs >= t - 50) seek(0L)
             exo.play()
         }
@@ -476,7 +554,12 @@ fun EditorScreen(onExit: () -> Unit) {
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Drag to scrub. Hold a clip, then drag to reorder.", color = NeoColors.Muted, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                Text(
+                    "Drag to scrub, pinch to zoom. Hold a clip to reorder.",
+                    color = NeoColors.Muted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.weight(1f)
+                )
                 SmallBtn("-") { zoomDp = (zoomDp / 1.4f).coerceAtLeast(12f) }
                 Spacer(Modifier.width(6.dp))
                 SmallBtn("+") { zoomDp = (zoomDp * 1.4f).coerceAtMost(400f) }
@@ -504,25 +587,19 @@ fun EditorScreen(onExit: () -> Unit) {
                             }
                         })
                     }
-                    // drag: scrub the timeline
+                    // drag = scrub, two fingers = pinch to zoom
                     .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragStart = {
+                        detectTransformGestures(onGesture = { _, pan, zoom, _ ->
+                            if (zoom != 1f) {
+                                zoomDp = (zoomDp * zoom).coerceIn(12f, 400f)
+                            }
+                            if (pan.x != 0f) {
                                 exo.pause()
                                 exo.setSeekParameters(SeekParameters.CLOSEST_SYNC)
-                            },
-                            onDragEnd = {
-                                exo.setSeekParameters(SeekParameters.EXACT)
-                                seek(playheadMs)
-                            },
-                            onDragCancel = {
-                                exo.setSeekParameters(SeekParameters.EXACT)
-                            },
-                            onDrag = { change, amount ->
-                                change.consume()
-                                seek((playheadMs - amount.x / ppmOf(density)).toLong())
+                                seek((playheadMs - pan.x / ppmOf(density)).toLong())
+                                scrubTick = scrubTick + 1
                             }
-                        )
+                        })
                     }
                     // long press + drag: reorder clips
                     .pointerInput(Unit) {
@@ -614,7 +691,8 @@ fun EditorScreen(onExit: () -> Unit) {
                                 "Clip " + (i + 1) + "  " + "%.1fs".format(c.durationMs / 1000f),
                                 x0, cw, trackTop, trackH,
                                 clipColors[i % clipColors.size],
-                                i == selectedIdx, false
+                                i == selectedIdx, false,
+                                thumbs[c.uri.toString()], c.inMs, ppm
                             )
                         }
                     }
@@ -648,7 +726,8 @@ fun EditorScreen(onExit: () -> Unit) {
                             "Clip " + (i + 1) + "  " + "%.1fs".format(c.durationMs / 1000f),
                             x0, cw, trackTop - 4.dp.toPx(), trackH,
                             clipColors[i % clipColors.size],
-                            true, true
+                            true, true,
+                            thumbs[c.uri.toString()], c.inMs, ppm
                         )
                     }
                 }
