@@ -595,7 +595,9 @@ fun EditorScreen(onExit: () -> Unit) {
                         textMeasurer,
                         fmtTick(t),
                         Offset(x + 4.dp.toPx(), 2.dp.toPx()),
-                        style = TextStyle(color = NeoColors.Muted, fontSize = 10.sp)
+                        style = TextStyle(color = NeoColors.Muted, fontSize = 10.sp),
+                        maxLines = 1,
+                        size = Size(40.dp.toPx(), 14.dp.toPx())
                     )
                     k++
                 }
